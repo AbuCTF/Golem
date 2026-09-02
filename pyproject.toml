@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "golem"
+version = "0.1.0"
+description = "Agent-driven Android emulation and instrumentation harness"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Abdur Rahman", email = "aburahman918@gmail.com"}]
+
+dependencies = [
+    "uiautomator2>=3.0",
+    "adbutils>=2.0",
+    "frida-tools>=12.0",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+proxy = [
+    "mitmproxy>=10.0",
+]
+static = [
+    "apkid",
+]
+
+[project.scripts]
+golem = "golem.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["golem*"]
