@@ -1,0 +1,124 @@
+@startuml architecture
+!theme mars
+skinparam backgroundColor #1a1a2e
+skinparam defaultFontColor #eaeaea
+skinparam ArrowColor #4fc3f7
+skinparam ComponentBackgroundColor #16213e
+skinparam ComponentBorderColor #4fc3f7
+skinparam DatabaseBackgroundColor #0f3460
+skinparam DatabaseBorderColor #e94560
+skinparam NodeBackgroundColor #1a1a2e
+skinparam NodeBorderColor #4fc3f7
+skinparam PackageBackgroundColor #16213e
+skinparam PackageBorderColor #4fc3f7
+skinparam NoteBackgroundColor #533483
+skinparam NoteBorderColor #e94560
+skinparam CloudBackgroundColor #0f3460
+skinparam CloudBorderColor #4fc3f7
+
+actor "Agent / BBP Harness" as user #4fc3f7
+
+node "Pool — manages multiple Android sessions" as pool {
+
+    package "Session A" as sa #16213e {
+        component "**~/.golem/profiles/a/**\n\n**AVD · Pixel 7 · API 34**\nu2 connected · Frida attached\nssl_bypass · crypto_monitor\nproxy: **mitmproxy :8082**" as sa_card
+    }
+
+    package "Session B" as sb #16213e {
+        component "**~/.golem/profiles/b/**\n\n**AVD · headless · swiftshader**\nu2 connected · no instrumentation\nproxy: **direct**\npersona: Galaxy S23 seed" as sb_card #e94560
+    }
+
+    package "Session N" as sn #0f3460 {
+        component "...\nSessionGroup for\nparallel / cross-account" as sn_card
+    }
+}
+
+' force left-to-right order
+sa -[hidden]right-> sb
+sb -[hidden]right-> sn
+
+package "Instrumentation Layer" as instr #16213e {
+    component "**FridaBridge**\nattach / spawn / load scripts\nssl_bypass · root_bypass\nemulator_bypass · crypto_monitor\nwebview_dump · intent_intercept\nsharedprefs_monitor" as frida
+    component "**ProxyServer**\nmitmproxy addon\ntmpfs CA cert install\ntraffic capture" as proxy
+}
+
+package "Context & Evidence" as ctx #16213e {
+    component "**ContextTracker**\nscreen ring buffer (50)\nscreen diffing\naction log (200)" as context
+    component "**EvidenceStore**\nscreenshot · traffic · frida\nshell · observe · custom\nindex.json per session" as evidence
+    component "**HealthMonitor**\nbattery · mem · disk · u2\nperiodic background checks" as health
+}
+
+package "Static Analysis" as analysis #16213e {
+    component "**APK Pipeline**\napktool + jadx + APKiD\nsecret scanner · endpoint extractor\nWebView bridge finder\nmanifest parser" as apk_analysis
+}
+
+package "Interface Layer" as iface #16213e {
+    component "**CLI**\nargparse · 25 commands\ngolem create/observe/tap/..." as cli
+    component "**MCP Server**\n19 tools · stdio transport\ngolem_observe/tap/type/..." as mcp
+    component "**JSON-RPC Daemon**\nUnix socket\n~/.golem/golem.sock" as daemon
+}
+
+component "**DevicePersona**\n6 real profiles · 6 carriers\nseed → consistent identity\nFrida overrides JS" as persona #533483
+
+component "**BBP Bridge**\nGolemHuntSession\nsetup → instrument → observe\n→ capture evidence → findings" as bbp #e94560
+
+cloud "Android Device" as android #0f3460
+
+' connections
+user -down-> mcp : MCP tools
+user -down-> cli : CLI
+user -down-> daemon : JSON-RPC
+
+cli -down-> pool
+mcp -down-> pool
+daemon -down-> pool
+
+sa -down-> frida : attach
+sa -down-> proxy : intercept
+sb -down-> android : adb + u2
+
+frida -down-> android : frida-server
+proxy -down-> android : CA cert + http_proxy
+
+sa_card -right-> context
+sa_card -right-> evidence
+sa_card -right-> health
+
+bbp -up-> pool : GolemHuntSession
+persona -up-> sa : apply fingerprint
+
+apk_analysis -[hidden]right-> persona
+
+note bottom of pool
+  **Isolation guarantees**
+  - separate profile dir per session
+  - independent u2 connection
+  - per-session Frida bridge
+  - per-session proxy config
+  - per-session evidence store
+  - DevicePersona for fingerprint
+end note
+
+note right of bbp
+  **BBP Harness Integration**
+  all target-facing traffic
+  routes through scope gate
+  + run_hunt_tool — Golem is
+  the local device-control
+  layer only
+end note
+
+legend right
+  |= Component |= Technology |
+  | Device | AVD emulator / physical |
+  | UI automation | uiautomator2 |
+  | Instrumentation | Frida 16.x |
+  | Traffic | mitmproxy |
+  | Static | apktool + jadx + APKiD |
+  | Persona | seeded PRNG |
+  | Daemon | asyncio Unix socket |
+  | MCP | mcp.server (stdio) |
+  | CLI | argparse |
+endlegend
+
+@enduml
