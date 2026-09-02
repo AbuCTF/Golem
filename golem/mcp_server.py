@@ -202,6 +202,60 @@ def create_mcp_server():
                     "required": ["session"],
                 },
             ),
+            Tool(
+                name="golem_health",
+                description="Check device health: online status, battery, memory, disk, u2 responsiveness.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"session": {"type": "string"}},
+                    "required": ["session"],
+                },
+            ),
+            Tool(
+                name="golem_diff",
+                description="Observe the screen and report what changed since the last observation.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"session": {"type": "string"}},
+                    "required": ["session"],
+                },
+            ),
+            Tool(
+                name="golem_evidence_capture",
+                description="Capture a screenshot as evidence with a description. Returns evidence ID.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {"type": "string"},
+                        "description": {"type": "string", "default": ""},
+                    },
+                    "required": ["session"],
+                },
+            ),
+            Tool(
+                name="golem_evidence_list",
+                description="List all captured evidence items for a session.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {"type": "string"},
+                        "type": {"type": "string", "description": "Filter by type: screenshot, traffic, frida, shell, observe"},
+                    },
+                    "required": ["session"],
+                },
+            ),
+            Tool(
+                name="golem_context",
+                description="Get recent action history and current screen context for a session.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {"type": "string"},
+                        "n": {"type": "integer", "default": 10, "description": "Number of recent actions"},
+                    },
+                    "required": ["session"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -280,6 +334,36 @@ def create_mcp_server():
             elif name == "golem_frida_messages":
                 msgs = await session.frida_messages(arguments.get("script"))
                 return [TextContent(type="text", text=json.dumps(msgs[-50:], indent=2, default=str))]
+
+            elif name == "golem_health":
+                status = await session.health_check()
+                return [TextContent(type="text", text=json.dumps(status, indent=2))]
+
+            elif name == "golem_diff":
+                diff = await session.observe_diff()
+                if diff is None:
+                    return [TextContent(type="text", text="no previous observation to diff against")]
+                return [TextContent(type="text", text=diff.summary())]
+
+            elif name == "golem_evidence_capture":
+                eid = await session.capture_screenshot_evidence(arguments.get("description", ""))
+                return [TextContent(type="text", text=f"captured: {eid}")]
+
+            elif name == "golem_evidence_list":
+                items = session.evidence.list(type_filter=arguments.get("type"))
+                out = [{"id": i.id, "type": i.type, "description": i.description, "timestamp": i.timestamp} for i in items]
+                return [TextContent(type="text", text=json.dumps(out, indent=2))]
+
+            elif name == "golem_context":
+                n = arguments.get("n", 10)
+                actions = session.context.recent_actions(n)
+                current = session.context.current
+                result = {
+                    "recent_actions": actions,
+                    "current_activity": current.activity if current else None,
+                    "current_package": current.package if current else None,
+                }
+                return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
             else:
                 return [TextContent(type="text", text=f"unknown tool: {name}")]

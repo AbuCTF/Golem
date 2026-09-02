@@ -246,6 +246,51 @@ class Daemon:
     async def _rpc_frida_scripts(self, params: dict) -> list:
         return Session.frida_scripts_available()
 
+    async def _rpc_health_check(self, params: dict) -> dict:
+        session = await self._pool.get(params["name"], launch=True)
+        return await session.health_check()
+
+    async def _rpc_observe_diff(self, params: dict) -> dict:
+        session = await self._pool.get(params["name"], launch=True)
+        diff = await session.observe_diff()
+        if diff is None:
+            return {"diff": None}
+        return {
+            "activity_changed": diff.activity_changed,
+            "old_activity": diff.old_activity,
+            "new_activity": diff.new_activity,
+            "added_texts": list(diff.added_texts),
+            "removed_texts": list(diff.removed_texts),
+            "element_count_delta": diff.element_count_delta,
+            "summary": diff.summary(),
+        }
+
+    async def _rpc_evidence_list(self, params: dict) -> list:
+        session = await self._pool.get(params["name"], launch=True)
+        items = session.evidence.list(type_filter=params.get("type"))
+        return [i.to_dict() for i in items]
+
+    async def _rpc_evidence_capture_screenshot(self, params: dict) -> dict:
+        session = await self._pool.get(params["name"], launch=True)
+        eid = await session.capture_screenshot_evidence(params.get("description", ""))
+        return {"evidence_id": eid}
+
+    async def _rpc_evidence_capture_observe(self, params: dict) -> dict:
+        session = await self._pool.get(params["name"], launch=True)
+        eid = await session.capture_observe_evidence(params.get("description", ""))
+        return {"evidence_id": eid}
+
+    async def _rpc_context_recent(self, params: dict) -> dict:
+        session = await self._pool.get(params["name"], launch=True)
+        actions = session.context.recent_actions(params.get("n", 10))
+        current = session.context.current
+        return {
+            "recent_actions": actions,
+            "current_activity": current.activity if current else None,
+            "current_package": current.package if current else None,
+            "screen_history_depth": len(session.context._history),
+        }
+
     async def _rpc_proxy_install_cert(self, params: dict) -> dict:
         session = await self._pool.get(params["name"], launch=True)
         await session.proxy_install_cert()

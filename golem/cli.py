@@ -122,6 +122,28 @@ def main():
     p = sub.add_parser("proxy-off", help="remove proxy from device")
     p.add_argument("name")
 
+    # diff
+    p = sub.add_parser("diff", help="observe and show what changed since last observe")
+    p.add_argument("name")
+
+    # health
+    p = sub.add_parser("health", help="show device health status")
+    p.add_argument("name")
+
+    # evidence
+    p = sub.add_parser("evidence", help="manage evidence items")
+    p.add_argument("name")
+    p_ev_sub = p.add_subparsers(dest="evidence_cmd")
+    p_ev_sub.add_parser("list", help="list evidence items")
+    p_ev_cap = p_ev_sub.add_parser("capture", help="capture screenshot evidence")
+    p_ev_cap.add_argument("--desc", default="", help="description")
+    p_ev_sub.add_parser("count", help="show evidence count")
+
+    # persona
+    p = sub.add_parser("persona", help="generate a device persona from a seed")
+    p.add_argument("seed", help="seed string for consistent identity")
+    p.add_argument("--profile", type=int, help="device profile index (0-5)")
+
     # frida-scripts
     sub.add_parser("frida-scripts", help="list available Frida scripts")
 
@@ -314,6 +336,49 @@ async def _run(args):
             session = await pool.get(args.name, launch=True)
             await session.proxy_clear()
             print("proxy cleared")
+
+        elif cmd == "diff":
+            session = await pool.get(args.name, launch=True)
+            diff = await session.observe_diff()
+            if diff is None:
+                print("no previous observation to diff against")
+            else:
+                print(diff.summary())
+
+        elif cmd == "health":
+            session = await pool.get(args.name, launch=True)
+            status = await session.health_check()
+            for k, v in status.items():
+                print(f"  {k}: {v}")
+
+        elif cmd == "evidence":
+            session = await pool.get(args.name, launch=True)
+            sub_cmd = args.evidence_cmd or "list"
+            if sub_cmd == "list":
+                items = session.evidence.list()
+                if not items:
+                    print("no evidence items")
+                else:
+                    for item in items:
+                        print(f"  {item.id:20s}  {item.type:12s}  {item.description or '-'}")
+            elif sub_cmd == "capture":
+                eid = await session.capture_screenshot_evidence(args.desc)
+                print(f"captured screenshot evidence: {eid}")
+            elif sub_cmd == "count":
+                print(f"evidence items: {session.evidence.count}")
+
+        elif cmd == "persona":
+            from golem.persona import generate_persona
+            persona = generate_persona(args.seed, profile_index=args.profile)
+            print(f"  model:      {persona.model}")
+            print(f"  brand:      {persona.brand} / {persona.manufacturer}")
+            print(f"  device:     {persona.device}")
+            print(f"  android_id: {persona.android_id}")
+            print(f"  imei:       {persona.imei}")
+            print(f"  carrier:    {persona.sim_operator_name}")
+            print(f"  serial:     {persona.serial_number}")
+            print(f"  build:      {persona.build_display}")
+            print(f"  seed:       {persona.seed}")
 
         elif cmd == "frida-scripts":
             from golem.session import Session

@@ -18,7 +18,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 from golem import config
+from golem.context import ContextTracker, HealthMonitor, ScreenDiff
 from golem.device import Device, DeviceInfo
+from golem.evidence import EvidenceStore
 from golem.observe import Element, format_elements, parse_hierarchy
 
 log = logging.getLogger(__name__)
@@ -51,6 +53,9 @@ class Session:
         self._serial: str | None = None
         self._profile_dir = profile_dir or (config.PROFILES_DIR / name)
         self._meta: dict = {}
+        self.context = ContextTracker()
+        self._evidence: EvidenceStore | None = None
+        self._health: HealthMonitor | None = None
 
     @property
     def state(self) -> State:
@@ -59,6 +64,33 @@ class Session:
     @property
     def profile_dir(self) -> Path:
         return self._profile_dir
+
+    @property
+    def evidence(self) -> EvidenceStore:
+        if self._evidence is None:
+            self._evidence = EvidenceStore(self.name)
+        return self._evidence
+
+    @property
+    def health(self) -> HealthMonitor:
+        if self._health is None:
+            if not self._serial:
+                raise RuntimeError("no serial — session not launched")
+            self._health = HealthMonitor(self._serial)
+        return self._health
+
+    async def health_check(self) -> dict:
+        """Run a device health check and return the status as a dict."""
+        status = await self.health.check()
+        return {
+            "device_online": status.device_online,
+            "u2_responsive": status.u2_responsive,
+            "battery_level": status.battery_level,
+            "memory_free_mb": status.memory_free_mb,
+            "disk_free_mb": status.disk_free_mb,
+            "screen_on": status.screen_on,
+            "uptime_seconds": status.uptime_seconds,
+        }
 
     async def launch(self) -> None:
         """Boot device and connect uiautomator2."""
@@ -180,7 +212,14 @@ class Session:
         for attempt in range(3):
             try:
                 xml = self._d.dump_hierarchy()
-                return parse_hierarchy(xml, interactive_only=interactive_only)
+                elements = parse_hierarchy(xml, interactive_only=interactive_only)
+                current = self._d.app_current()
+                self.context.record_screen(
+                    activity=current.get("activity", ""),
+                    package=current.get("package", ""),
+                    elements=elements,
+                )
+                return elements
             except (ConnectionError, OSError):
                 if attempt == 2:
                     raise
@@ -215,6 +254,7 @@ class Session:
             raise TypeError(f"unsupported target type: {type(target)}")
 
         await asyncio.sleep(0.5)
+        self.context.record_action("tap", target=str(target))
         return await self.screen_state()
 
     async def type_text(self, text: str, *, clear: bool = False) -> None:
@@ -223,6 +263,7 @@ class Session:
         if clear:
             await self._u2_retry(self._d.clear_text)
         await self._u2_retry(self._d.send_keys, text)
+        self.context.record_action("type", text=text, clear=clear)
 
     async def fill(self, target: int | str | Element, text: str) -> None:
         """Tap a field then type text into it."""
@@ -234,11 +275,13 @@ class Session:
         """Press a key: back, home, enter, recent, volume_up, volume_down, etc."""
         self._require_active()
         await self._u2_retry(self._d.press, key)
+        self.context.record_action("press", key=key)
 
     async def swipe(self, direction: str = "up", *, scale: float = 0.6) -> None:
         """Swipe in a direction: up, down, left, right."""
         self._require_active()
         await self._u2_retry(self._d.swipe_ext, direction, scale=scale)
+        self.context.record_action("swipe", direction=direction)
 
     async def scroll_to(self, text: str, *, max_swipes: int = 10) -> Element | None:
         """Scroll down until element with text is found."""
@@ -374,6 +417,41 @@ class Session:
                 return True
             await asyncio.sleep(0.5)
         return False
+
+    # ── Evidence capture ──
+
+    async def capture_screenshot_evidence(self, description: str = "") -> str:
+        """Take a screenshot and store it as evidence. Returns evidence ID."""
+        png = await self.screenshot()
+        item = self.evidence.capture_screenshot(png, description)
+        return item.id
+
+    async def capture_observe_evidence(self, description: str = "") -> str:
+        """Capture current UI hierarchy as evidence. Returns evidence ID."""
+        elements = await self.observe(interactive_only=False)
+        text = format_elements(elements)
+        item = self.evidence.capture_observe(text, description)
+        return item.id
+
+    async def observe_diff(self) -> ScreenDiff | None:
+        """Run observe() and return what changed since the last observation."""
+        await self.observe()
+        if len(self.context._history) < 2:
+            return None
+        prev = self.context._history[-2]
+        curr = self.context._history[-1]
+        old_texts = prev.element_texts()
+        new_texts = curr.element_texts()
+        return ScreenDiff(
+            timestamp=curr.timestamp,
+            activity_changed=prev.activity != curr.activity,
+            old_activity=prev.activity,
+            new_activity=curr.activity,
+            added_elements=[e for e in curr.elements if e.text and e.text not in old_texts],
+            removed_texts=old_texts - new_texts,
+            added_texts=new_texts - old_texts,
+            element_count_delta=curr.element_count - prev.element_count,
+        )
 
     # ── Frida instrumentation ──
 
