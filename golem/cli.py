@@ -125,6 +125,12 @@ def main():
     # frida-scripts
     sub.add_parser("frida-scripts", help="list available Frida scripts")
 
+    # daemon
+    sub.add_parser("daemon", help="start the Golem daemon (JSON-RPC over Unix socket)")
+
+    # mcp
+    sub.add_parser("mcp", help="start the MCP server (stdio)")
+
     # sdk
     p_sdk = sub.add_parser("sdk", help="manage Android SDK")
     sdk_sub = p_sdk.add_subparsers(dest="sdk_cmd")
@@ -139,6 +145,16 @@ def main():
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(message)s",
     )
+
+    if args.command == "daemon":
+        from golem.daemon import run_daemon
+        asyncio.run(run_daemon())
+        return
+
+    if args.command == "mcp":
+        from golem.mcp_server import main as mcp_main
+        mcp_main()
+        return
 
     asyncio.run(_run(args))
 

@@ -25,12 +25,16 @@ dev = [
 proxy = [
     "mitmproxy>=10.0",
 ]
+mcp = [
+    "mcp>=1.0",
+]
 static = [
     "apkid",
 ]
 
 [project.scripts]
 golem = "golem.cli:main"
+golem-mcp = "golem.mcp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["golem*"]
