@@ -429,6 +429,26 @@ class Session:
         from golem.frida_bridge import FridaBridge
         return FridaBridge.available_scripts()
 
+    # ── Proxy / cert ──
+
+    async def proxy_install_cert(self, cert_path: Path | None = None) -> None:
+        """Install CA cert into the system trust store (requires root)."""
+        self._require_active()
+        from golem.proxy import install_ca_cert
+        await install_ca_cert(self._serial, cert_path)
+
+    async def proxy_configure(self, host: str = "10.0.2.2", port: int = 8082) -> None:
+        """Set device HTTP proxy to point at mitmproxy."""
+        self._require_active()
+        from golem.proxy import configure_proxy
+        await configure_proxy(self._serial, host, port)
+
+    async def proxy_clear(self) -> None:
+        """Remove proxy configuration from device."""
+        self._require_active()
+        from golem.proxy import clear_proxy
+        await clear_proxy(self._serial)
+
     # ── Internals ──
 
     def _keyboard_visible(self) -> bool:

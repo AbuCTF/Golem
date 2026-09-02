@@ -128,6 +128,7 @@ class AVDDevice(Device):
         ]
         if self.headless:
             cmd.extend(["-no-window", "-no-audio"])
+        cmd.extend(["-writable-system"])
         cmd.extend(self.extra_args)
 
         log.info("booting AVD %s: %s", self._avd_name, " ".join(cmd))

@@ -108,6 +108,23 @@ def main():
     p = sub.add_parser("destroy", help="shut down and remove a session")
     p.add_argument("name")
 
+    # cert-install
+    p = sub.add_parser("cert-install", help="install mitmproxy CA cert on device")
+    p.add_argument("name")
+    p.add_argument("--cert", help="path to PEM cert (default: mitmproxy CA)")
+
+    # proxy-on
+    p = sub.add_parser("proxy-on", help="configure device to use proxy")
+    p.add_argument("name")
+    p.add_argument("--port", type=int, default=8082)
+
+    # proxy-off
+    p = sub.add_parser("proxy-off", help="remove proxy from device")
+    p.add_argument("name")
+
+    # frida-scripts
+    sub.add_parser("frida-scripts", help="list available Frida scripts")
+
     # sdk
     p_sdk = sub.add_parser("sdk", help="manage Android SDK")
     sdk_sub = p_sdk.add_subparsers(dest="sdk_cmd")
@@ -259,6 +276,29 @@ async def _run(args):
         elif cmd == "destroy":
             await pool.destroy(args.name)
             print(f"session '{args.name}' destroyed")
+
+        elif cmd == "cert-install":
+            from pathlib import Path
+            session = await pool.get(args.name, launch=True)
+            cert = Path(args.cert) if args.cert else None
+            await session.proxy_install_cert(cert)
+            print("CA cert installed — reboot device to activate")
+
+        elif cmd == "proxy-on":
+            session = await pool.get(args.name, launch=True)
+            await session.proxy_configure(port=args.port)
+            print(f"proxy configured → 10.0.2.2:{args.port}")
+
+        elif cmd == "proxy-off":
+            session = await pool.get(args.name, launch=True)
+            await session.proxy_clear()
+            print("proxy cleared")
+
+        elif cmd == "frida-scripts":
+            from golem.session import Session
+            scripts = Session.frida_scripts_available()
+            for s in scripts:
+                print(f"  {s}")
 
 
 async def _cmd_sdk(args):
