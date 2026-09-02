@@ -125,6 +125,11 @@ def main():
     # frida-scripts
     sub.add_parser("frida-scripts", help="list available Frida scripts")
 
+    # analyze
+    p = sub.add_parser("analyze", help="run static analysis on an APK")
+    p.add_argument("apk", help="path to APK file")
+    p.add_argument("--output", "-o", help="output directory")
+
     # daemon
     sub.add_parser("daemon", help="start the Golem daemon (JSON-RPC over Unix socket)")
 
@@ -315,6 +320,11 @@ async def _run(args):
             scripts = Session.frida_scripts_available()
             for s in scripts:
                 print(f"  {s}")
+
+        elif cmd == "analyze":
+            from golem.static import analyze_apk
+            result = await analyze_apk(args.apk, output_dir=args.output)
+            print(result.summary())
 
 
 async def _cmd_sdk(args):
