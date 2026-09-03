@@ -7,165 +7,228 @@ import asyncio
 import json
 import logging
 import sys
+import textwrap
 
 from golem import __version__
+
+
+HELP_TEXT = f"""\
+usage: golem [options] <command> [<args>]
+
+instrumented android session orchestrator
+
+options:
+  -h, --help        show this help message and exit
+  --version         show program's version number and exit
+  -v, --verbose     enable debug logging
+
+session:
+  create          create a new session
+  list            list sessions
+  status          show session details
+  close           hibernate a session (keep device)
+  destroy         shut down and remove a session
+
+ui automation:
+  observe         dump interactive elements on screen
+  tap             tap an element by index, text, or resource id
+  type            type text into focused element
+  fill            tap a field then type text
+  press           press a key (back, home, enter, recent)
+  swipe           swipe in a direction
+  screenshot      take a screenshot
+  screen          show current screen state
+  diff            show what changed since last observe
+
+app management:
+  install         install an APK
+  launch          launch an app by package name
+  stop            stop a running app
+  apps            list installed apps
+  shell           run shell command on device
+
+instrumentation:
+  cert-install    install mitmproxy CA cert on device
+  proxy-on        configure device to use proxy
+  proxy-off       remove proxy from device
+  frida-scripts   list available Frida scripts
+
+analysis:
+  analyze         run static analysis on an APK
+  persona         generate a device persona from a seed
+  health          show device health status
+  evidence        manage evidence items
+
+daemon:
+  daemon          start the Golem daemon (JSON-RPC over Unix socket)
+  mcp             start the MCP server (stdio)
+
+other:
+  sdk             manage Android SDK
+"""
 
 
 def main():
     parser = argparse.ArgumentParser(
         prog="golem",
-        description="instrumented android session orchestrator",
+        add_help=False,
     )
-    parser.add_argument("--version", action="version", version=f"golem {__version__}")
+    parser.add_argument("-h", "--help", action="store_true")
+    parser.add_argument("--version", action="store_true")
     parser.add_argument("-v", "--verbose", action="store_true")
 
     sub = parser.add_subparsers(dest="command")
 
     # create
-    p = sub.add_parser("create", help="create a new session")
+    p = sub.add_parser("create")
     p.add_argument("name")
     p.add_argument("--device", default="avd", help="device spec (avd, avd:pixel_8, physical:SERIAL, usb)")
     p.add_argument("--headed", action="store_true", help="show emulator window")
     p.add_argument("--no-launch", action="store_true", help="create without booting")
 
     # list
-    sub.add_parser("list", help="list sessions")
+    sub.add_parser("list")
 
     # status
-    p = sub.add_parser("status", help="show session status")
+    p = sub.add_parser("status")
     p.add_argument("name")
 
     # observe
-    p = sub.add_parser("observe", help="dump interactive elements on screen")
+    p = sub.add_parser("observe")
     p.add_argument("name")
     p.add_argument("--all", action="store_true", help="include non-interactive elements")
 
     # tap
-    p = sub.add_parser("tap", help="tap an element")
+    p = sub.add_parser("tap")
     p.add_argument("name")
     p.add_argument("target", help="element index, text, or id:resource_id")
 
     # type
-    p = sub.add_parser("type", help="type text into focused element")
+    p = sub.add_parser("type")
     p.add_argument("name")
     p.add_argument("text")
     p.add_argument("--clear", action="store_true")
 
     # fill
-    p = sub.add_parser("fill", help="tap a field then type text")
+    p = sub.add_parser("fill")
     p.add_argument("name")
     p.add_argument("target")
     p.add_argument("text")
 
     # press
-    p = sub.add_parser("press", help="press a key (back, home, enter, recent)")
+    p = sub.add_parser("press")
     p.add_argument("name")
     p.add_argument("key")
 
     # swipe
-    p = sub.add_parser("swipe", help="swipe in a direction")
+    p = sub.add_parser("swipe")
     p.add_argument("name")
     p.add_argument("direction", choices=["up", "down", "left", "right"], default="up", nargs="?")
 
     # screenshot
-    p = sub.add_parser("screenshot", help="take a screenshot")
+    p = sub.add_parser("screenshot")
     p.add_argument("name")
     p.add_argument("output", nargs="?", default="screenshot.png")
 
     # screen
-    p = sub.add_parser("screen", help="show current screen state")
+    p = sub.add_parser("screen")
     p.add_argument("name")
 
     # install
-    p = sub.add_parser("install", help="install an APK")
+    p = sub.add_parser("install")
     p.add_argument("name")
     p.add_argument("apk", nargs="+", help="APK file(s) — multiple for split APKs")
 
     # launch
-    p = sub.add_parser("launch", help="launch an app")
+    p = sub.add_parser("launch")
     p.add_argument("name")
     p.add_argument("package")
 
     # stop
-    p = sub.add_parser("stop", help="stop an app")
+    p = sub.add_parser("stop")
     p.add_argument("name")
     p.add_argument("package")
 
     # apps
-    p = sub.add_parser("apps", help="list installed apps")
+    p = sub.add_parser("apps")
     p.add_argument("name")
 
     # shell
-    p = sub.add_parser("shell", help="run shell command on device")
+    p = sub.add_parser("shell")
     p.add_argument("name")
     p.add_argument("cmd", nargs=argparse.REMAINDER)
 
     # close
-    p = sub.add_parser("close", help="hibernate a session (keep device)")
+    p = sub.add_parser("close")
     p.add_argument("name")
 
     # destroy
-    p = sub.add_parser("destroy", help="shut down and remove a session")
+    p = sub.add_parser("destroy")
     p.add_argument("name")
 
     # cert-install
-    p = sub.add_parser("cert-install", help="install mitmproxy CA cert on device")
+    p = sub.add_parser("cert-install")
     p.add_argument("name")
     p.add_argument("--cert", help="path to PEM cert (default: mitmproxy CA)")
 
     # proxy-on
-    p = sub.add_parser("proxy-on", help="configure device to use proxy")
+    p = sub.add_parser("proxy-on")
     p.add_argument("name")
     p.add_argument("--port", type=int, default=8082)
 
     # proxy-off
-    p = sub.add_parser("proxy-off", help="remove proxy from device")
+    p = sub.add_parser("proxy-off")
     p.add_argument("name")
 
     # diff
-    p = sub.add_parser("diff", help="observe and show what changed since last observe")
+    p = sub.add_parser("diff")
     p.add_argument("name")
 
     # health
-    p = sub.add_parser("health", help="show device health status")
+    p = sub.add_parser("health")
     p.add_argument("name")
 
     # evidence
-    p = sub.add_parser("evidence", help="manage evidence items")
+    p = sub.add_parser("evidence")
     p.add_argument("name")
     p_ev_sub = p.add_subparsers(dest="evidence_cmd")
-    p_ev_sub.add_parser("list", help="list evidence items")
-    p_ev_cap = p_ev_sub.add_parser("capture", help="capture screenshot evidence")
+    p_ev_sub.add_parser("list")
+    p_ev_cap = p_ev_sub.add_parser("capture")
     p_ev_cap.add_argument("--desc", default="", help="description")
-    p_ev_sub.add_parser("count", help="show evidence count")
+    p_ev_sub.add_parser("count")
 
     # persona
-    p = sub.add_parser("persona", help="generate a device persona from a seed")
+    p = sub.add_parser("persona")
     p.add_argument("seed", help="seed string for consistent identity")
     p.add_argument("--profile", type=int, help="device profile index (0-5)")
 
     # frida-scripts
-    sub.add_parser("frida-scripts", help="list available Frida scripts")
+    sub.add_parser("frida-scripts")
 
     # analyze
-    p = sub.add_parser("analyze", help="run static analysis on an APK")
+    p = sub.add_parser("analyze")
     p.add_argument("apk", help="path to APK file")
     p.add_argument("--output", "-o", help="output directory")
 
     # daemon
-    sub.add_parser("daemon", help="start the Golem daemon (JSON-RPC over Unix socket)")
+    sub.add_parser("daemon")
 
     # mcp
-    sub.add_parser("mcp", help="start the MCP server (stdio)")
+    sub.add_parser("mcp")
 
     # sdk
-    p_sdk = sub.add_parser("sdk", help="manage Android SDK")
+    p_sdk = sub.add_parser("sdk")
     sdk_sub = p_sdk.add_subparsers(dest="sdk_cmd")
-    sdk_sub.add_parser("status", help="show SDK status")
+    sdk_sub.add_parser("status")
 
     args = parser.parse_args()
-    if not args.command:
-        parser.print_help()
+
+    if args.version:
+        print(f"golem {__version__}")
+        return
+
+    if args.help or not args.command:
+        print(HELP_TEXT, end="")
         return
 
     logging.basicConfig(

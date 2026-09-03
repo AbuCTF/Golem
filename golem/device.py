@@ -141,7 +141,20 @@ class AVDDevice(Device):
 
         self._serial = await self._find_serial()
         await self.wait_boot()
+        await self._post_boot_setup()
         return self._serial
+
+    async def _post_boot_setup(self) -> None:
+        """One-time fixes after boot: disable captive portal false alarm."""
+        for cmd in [
+            "settings put global captive_portal_detection_enabled 0",
+            "settings put global captive_portal_mode 0",
+        ]:
+            await asyncio.create_subprocess_exec(
+                "adb", "-s", self._serial, "shell", cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
 
     async def shutdown(self) -> None:
         if self._serial:
@@ -240,6 +253,20 @@ class AVDDevice(Device):
         out, err = await proc.communicate(input=b"no\n")
         if proc.returncode != 0:
             raise RuntimeError(f"failed to create AVD: {err.decode()}")
+
+        # Patch config: enable hw keyboard, set RAM
+        avd_home = self._sdk_env().get("ANDROID_AVD_HOME", "")
+        config_ini = Path(avd_home) / f"{self._avd_name}.avd" / "config.ini"
+        if config_ini.exists():
+            text = config_ini.read_text()
+            text = text.replace("hw.keyboard = no", "hw.keyboard = yes")
+            if "hw.keyboard" not in text:
+                text += "\nhw.keyboard = yes\n"
+            if "hw.ramSize" in text:
+                import re
+                text = re.sub(r"hw\.ramSize\s*=\s*\S+", f"hw.ramSize = {self.ram_mb}M", text)
+            config_ini.write_text(text)
+
         log.info("AVD %s created", self._avd_name)
 
     async def _find_serial(self, timeout: int = 90) -> str:
