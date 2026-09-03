@@ -5,6 +5,10 @@ ANDROID_SDK_VERSION="11076708"
 API_LEVEL=34
 SYSTEM_IMAGE="system-images;android-${API_LEVEL};google_apis;x86_64"
 GOLEM_DIR="$(cd "$(dirname "$0")" && pwd)"
+PIP_EXTRA_ARGS=()
+if pip install --help 2>&1 | grep -q "break-system-packages"; then
+    PIP_EXTRA_ARGS+=(--break-system-packages)
+fi
 
 info()  { echo "  [*] $*"; }
 ok()    { echo "  [+] $*"; }
@@ -168,7 +172,7 @@ install_python_package() {
         return 1
     fi
     cd "$GOLEM_DIR"
-    pip install -e ".[dev,proxy,mcp]" 2>&1 | tail -3
+    pip install "${PIP_EXTRA_ARGS[@]}" -e ".[dev,proxy,mcp]" 2>&1 | tail -3
     ok "golem $(python3 -c 'from golem import __version__; print(__version__)')"
 }
 
@@ -201,7 +205,7 @@ install_static_tools() {
         esac
     fi
 
-    python3 -c "import apkid" 2>/dev/null || pip install apkid 2>&1 | tail -1 || true
+    python3 -c "import apkid" 2>/dev/null || pip install "${PIP_EXTRA_ARGS[@]}" apkid 2>&1 | tail -1 || true
 
     if [ ${#missing[@]} -gt 0 ]; then
         warn "install manually: ${missing[*]}"
