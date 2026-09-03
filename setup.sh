@@ -176,7 +176,7 @@ install_python_package() {
         return 1
     fi
     cd "$GOLEM_DIR"
-    local venv_dir="$GOLEM_DIR/.venv"
+    local venv_dir="$GOLEM_DIR/omni"
     if python3 -c "import sys; exit(0 if hasattr(sys, '_base_executable') or __import__('sysconfig').get_path('stdlib').startswith('/usr') else 1)" 2>/dev/null \
        && [ -f /usr/lib/python3*/EXTERNALLY-MANAGED ] 2>/dev/null; then
         info "externally managed python detected - using venv"
