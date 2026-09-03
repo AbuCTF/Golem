@@ -117,9 +117,20 @@ class Pool:
         await session.close()
 
     async def destroy(self, name: str) -> None:
-        session = await self.get(name)
-        await session.destroy()
-        del self._sessions[name]
+        try:
+            session = await self.get(name)
+            await session.destroy()
+        except (KeyError, FileNotFoundError):
+            # Profile already gone — kill orphan emulator if any
+            from golem.device import AVDDevice
+            dev = AVDDevice(name, headless=True)
+            await dev.shutdown()
+            profile = config.PROFILES_DIR / name
+            if profile.exists():
+                import shutil
+                shutil.rmtree(profile)
+            log.info("session '%s' destroyed (orphan cleanup)", name)
+        self._sessions.pop(name, None)
 
     async def parallel(self, names: list[str], action) -> list:
         """Run an async action across multiple sessions in parallel."""

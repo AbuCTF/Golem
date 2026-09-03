@@ -157,13 +157,17 @@ class AVDDevice(Device):
             )
 
     async def shutdown(self) -> None:
+        if not self._serial:
+            self._serial = await self._find_existing_serial()
         if self._serial:
             try:
-                await asyncio.create_subprocess_exec(
+                proc = await asyncio.create_subprocess_exec(
                     "adb", "-s", self._serial, "emu", "kill",
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
+                await asyncio.wait_for(proc.wait(), timeout=5)
+                await asyncio.sleep(2)
             except Exception:
                 pass
         if self._process:
