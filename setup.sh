@@ -176,7 +176,20 @@ install_python_package() {
         return 1
     fi
     cd "$GOLEM_DIR"
-    pip_install -e ".[dev,proxy,mcp]" 2>&1 | tail -3
+    local venv_dir="$GOLEM_DIR/.venv"
+    if python3 -c "import sys; exit(0 if hasattr(sys, '_base_executable') or __import__('sysconfig').get_path('stdlib').startswith('/usr') else 1)" 2>/dev/null \
+       && [ -f /usr/lib/python3*/EXTERNALLY-MANAGED ] 2>/dev/null; then
+        info "externally managed python detected - using venv"
+        python3 -m venv "$venv_dir"
+        source "$venv_dir/bin/activate"
+        for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+            if [ -f "$rc" ] && ! grep -q "golem.*venv" "$rc" 2>/dev/null; then
+                echo "source \"$venv_dir/bin/activate\"" >> "$rc"
+                ok "added venv activation to $(basename "$rc")"
+            fi
+        done
+    fi
+    pip3 install -e ".[dev,proxy,mcp]" 2>&1 | tail -3
     ok "golem $(python3 -c 'from golem import __version__; print(__version__)')"
 }
 
