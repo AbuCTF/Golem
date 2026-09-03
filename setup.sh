@@ -317,6 +317,11 @@ main() {
     install_python_package
     $skip_static || install_static_tools
     verify_install
+
+    if [ -d "$GOLEM_DIR/omni" ]; then
+        echo "  run: source omni/bin/activate"
+    fi
+    echo "  run: golem create test --headed"
 }
 
 main "$@"
