@@ -121,11 +121,31 @@ class Session:
         log.info("session '%s' launched on %s", self.name, self._serial)
 
     async def _apply_device_fixes(self) -> None:
-        """Apply fixes on every connect: captive portal, etc."""
-        for cmd in [
-            "settings put global captive_portal_detection_enabled 0",
-            "settings put global captive_portal_mode 0",
-        ]:
+        """Apply performance and connectivity fixes on every connect."""
+        commands = [
+            # kill animations for speed
+            "settings put global window_animation_scale 0",
+            "settings put global transition_animation_scale 0",
+            "settings put global animator_duration_scale 0",
+            # fix internet indicator — point captive portal at working URL
+            "settings put global captive_portal_https_url https://www.google.com/generate_204",
+            "settings put global captive_portal_http_url http://connectivitycheck.gstatic.com/generate_204",
+        ]
+        # disable bloat that causes ANR and eats RAM
+        bloat = [
+            "com.google.android.gms", "com.google.android.gsf",
+            "com.google.android.setupwizard", "com.google.android.apps.wellbeing",
+            "com.google.android.feedback", "com.google.android.onetimeinitializer",
+            "com.google.android.partnersetup", "com.android.vending",
+            "com.google.android.apps.docs", "com.google.android.apps.maps",
+            "com.google.android.apps.photos", "com.google.android.apps.youtube.music",
+            "com.google.android.youtube", "com.google.android.calendar",
+            "com.google.android.printservice.recommendation",
+        ]
+        for pkg in bloat:
+            commands.append(f"pm disable-user --user 0 {pkg}")
+
+        for cmd in commands:
             proc = await asyncio.create_subprocess_exec(
                 "adb", "-s", self._serial, "shell", cmd,
                 stdout=asyncio.subprocess.DEVNULL,

@@ -125,6 +125,9 @@ class AVDDevice(Device):
             "-avd", self._avd_name,
             "-gpu", gpu,
             "-memory", str(self.ram_mb),
+            "-cores", "4",
+            "-no-boot-anim",
+            "-no-snapshot-save",
         ]
         if self.headless:
             cmd.extend(["-no-window", "-no-audio"])
