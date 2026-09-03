@@ -371,6 +371,9 @@ async def _run(args):
                 print(f"  {a}")
 
         elif cmd == "shell":
+            if not args.cmd:
+                print("error: no command given", file=sys.stderr)
+                sys.exit(1)
             session = await pool.get(args.name, launch=True)
             out = await session.shell(" ".join(args.cmd))
             print(out, end="")
@@ -380,7 +383,11 @@ async def _run(args):
             print(f"session '{args.name}' hibernated")
 
         elif cmd == "destroy":
-            await pool.destroy(args.name)
+            try:
+                await pool.destroy(args.name)
+            except KeyError:
+                print(f"error: session '{args.name}' not found", file=sys.stderr)
+                sys.exit(1)
             print(f"session '{args.name}' destroyed")
 
         elif cmd == "cert-install":

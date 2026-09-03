@@ -1,6 +1,6 @@
 """Golem — agent-driven Android emulation and instrumentation harness."""
 
-__version__ = "0.5.0"
+__version__ = "0.5.9"
 
 from golem.pool import Pool
 from golem.session import Session

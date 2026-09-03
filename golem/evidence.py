@@ -55,9 +55,14 @@ class EvidenceStore:
     def _load_existing(self) -> None:
         index_path = self._dir / "index.json"
         if index_path.exists():
-            data = json.loads(index_path.read_text())
-            self._items = [EvidenceItem(**item) for item in data]
-            self._counter = len(self._items)
+            try:
+                data = json.loads(index_path.read_text())
+                self._items = [EvidenceItem(**item) for item in data]
+                self._counter = len(self._items)
+            except (json.JSONDecodeError, OSError, TypeError):
+                log.warning("corrupted evidence index, starting fresh")
+                self._items = []
+                self._counter = 0
 
     def _save_index(self) -> None:
         index_path = self._dir / "index.json"

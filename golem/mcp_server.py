@@ -327,7 +327,8 @@ def create_mcp_server():
             elif name == "golem_frida_load":
                 package = arguments["package"]
                 scripts = arguments["scripts"]
-                await session.frida_attach(package)
+                if not session._frida or not session._frida.is_attached:
+                    await session.frida_attach(package)
                 await session.frida_load(*scripts)
                 return [TextContent(type="text", text=f"attached to {package}, loaded: {', '.join(scripts)}")]
 

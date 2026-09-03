@@ -175,6 +175,9 @@ class ProxyServer:
             self._master.shutdown()
             self._master = None
         self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+        self._thread = None
         log.info("proxy stopped")
 
     @property
@@ -298,4 +301,7 @@ async def clear_proxy(serial: str) -> None:
         await proc.communicate()
 
     await _adb("shell", "settings", "put", "global", "http_proxy", ":0")
+    await _adb("shell", "settings", "delete", "global", "global_http_proxy_host")
+    await _adb("shell", "settings", "delete", "global", "global_http_proxy_port")
+    await _adb("shell", "settings", "delete", "global", "global_http_proxy_exclusion_list")
     log.info("proxy cleared on %s", serial)

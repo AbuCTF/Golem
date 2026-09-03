@@ -59,8 +59,8 @@ class Device(ABC):
     async def wait_boot(self, timeout: int = config.EMULATOR_BOOT_TIMEOUT) -> None:
         """Wait until device finishes booting (sys.boot_completed=1)."""
         serial = self.serial()
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
             try:
                 proc = await asyncio.create_subprocess_exec(
                     "adb", "-s", serial, "shell", "getprop", "sys.boot_completed",
@@ -278,9 +278,9 @@ class AVDDevice(Device):
 
     async def _find_serial(self, timeout: int = 90) -> str:
         """Wait for our new emulator to appear in adb devices."""
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         known_before = await self._list_emulator_serials()
-        while asyncio.get_event_loop().time() < deadline:
+        while asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(2)
             if self._process and self._process.returncode is not None:
                 stderr = b""

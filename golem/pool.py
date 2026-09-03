@@ -35,20 +35,23 @@ class Pool:
                 await session.close()
 
     def _discover_existing(self) -> None:
-        """Discover sessions from profile dirs on disk."""
         if not config.PROFILES_DIR.exists():
             return
+        import json
         for d in config.PROFILES_DIR.iterdir():
             if not d.is_dir():
                 continue
             meta_path = d / "golem_meta.json"
             if meta_path.exists():
-                import json
-                meta = json.loads(meta_path.read_text())
-                name = meta.get("name", d.name)
+                try:
+                    meta = json.loads(meta_path.read_text())
+                    name = meta.get("name", d.name)
+                except (json.JSONDecodeError, OSError):
+                    log.warning("skipping corrupted profile: %s", d.name)
+                    continue
                 if name not in self._sessions:
                     log.debug("discovered session '%s' from %s", name, d)
-                    self._sessions[name] = None  # placeholder, loaded on get()
+                    self._sessions[name] = None
 
     async def create(
         self,
@@ -82,10 +85,14 @@ class Pool:
         session = self._sessions.get(name)
         if session is None:
             profile = config.PROFILES_DIR / name
-            if not profile.exists():
+            meta_path = profile / "golem_meta.json"
+            if not profile.exists() or not meta_path.exists():
                 raise KeyError(f"session '{name}' not found")
             import json
-            meta = json.loads((profile / "golem_meta.json").read_text())
+            try:
+                meta = json.loads(meta_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                raise KeyError(f"session '{name}' has corrupted metadata")
             device = create_device(name, meta.get("device_spec", "avd"))
             session = Session.from_profile_dir(profile, device)
             self._sessions[name] = session
@@ -121,11 +128,14 @@ class Pool:
             session = await self.get(name)
             await session.destroy()
         except (KeyError, FileNotFoundError):
-            # Profile already gone — kill orphan emulator if any
             from golem.device import AVDDevice
             dev = AVDDevice(name, headless=True)
-            await dev.shutdown()
+            orphan_serial = await dev._find_existing_serial()
             profile = config.PROFILES_DIR / name
+            if not orphan_serial and not profile.exists() and name not in self._sessions:
+                raise KeyError(f"session '{name}' not found")
+            if orphan_serial:
+                await dev.shutdown()
             if profile.exists():
                 import shutil
                 shutil.rmtree(profile)
@@ -133,6 +143,10 @@ class Pool:
         self._sessions.pop(name, None)
 
     async def parallel(self, names: list[str], action) -> list:
-        """Run an async action across multiple sessions in parallel."""
-        sessions = [await self.get(n, launch=True) for n in names]
-        return await asyncio.gather(*(action(s) for s in sessions))
+        sessions = []
+        for n in names:
+            try:
+                sessions.append(await self.get(n, launch=True))
+            except (KeyError, RuntimeError) as e:
+                log.warning("skipping session '%s': %s", n, e)
+        return await asyncio.gather(*(action(s) for s in sessions), return_exceptions=True)

@@ -78,14 +78,25 @@ class FridaBridge:
                 "adb shell chmod 755 /data/local/tmp/frida-server"
             )
 
-        start = await asyncio.create_subprocess_exec(
+        await asyncio.create_subprocess_exec(
             "adb", "-s", self._serial, "shell",
             f"su -c '{FRIDA_SERVER_PATH} -D &'",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        await asyncio.sleep(1)
-        log.info("frida-server started on %s", self._serial)
+        for _ in range(10):
+            await asyncio.sleep(0.5)
+            verify = await asyncio.create_subprocess_exec(
+                "adb", "-s", self._serial, "shell",
+                "ps -A | grep frida-server",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await verify.communicate()
+            if b"frida-server" in out:
+                log.info("frida-server started on %s", self._serial)
+                return
+        raise RuntimeError("frida-server failed to start within 5s")
 
     async def attach(self, target: str | int) -> None:
         """Attach to a running process by name or PID."""
@@ -136,7 +147,7 @@ class FridaBridge:
             self._handle_message(name, message, data)
 
         script.on("message", on_msg)
-        script.load()
+        await asyncio.get_running_loop().run_in_executor(None, script.load)
         log.info("loaded frida script '%s'", name)
         return handle
 
@@ -171,7 +182,7 @@ class FridaBridge:
                 result.append(message.get("payload"))
 
         script.on("message", on_msg)
-        script.load()
+        await asyncio.get_running_loop().run_in_executor(None, script.load)
         await asyncio.sleep(0.5)
         script.unload()
         return result[0] if result else None

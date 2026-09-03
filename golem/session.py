@@ -130,6 +130,11 @@ class Session:
             # fix internet indicator — point captive portal at working URL
             "settings put global captive_portal_https_url https://www.google.com/generate_204",
             "settings put global captive_portal_http_url http://connectivitycheck.gstatic.com/generate_204",
+            # clear leftover proxy settings (survives reboot, breaks Chrome)
+            "settings put global http_proxy :0",
+            "settings delete global global_http_proxy_host",
+            "settings delete global global_http_proxy_port",
+            "settings delete global global_http_proxy_exclusion_list",
         ]
         # disable bloat that causes ANR and eats RAM
         bloat = [
@@ -343,7 +348,7 @@ class Session:
                     "package": current.get("package", ""),
                     "screen_size": (info.get("displayWidth", 0), info.get("displayHeight", 0)),
                     "orientation": _orientation_name(info.get("displayRotation", 0)),
-                    "keyboard_shown": info.get("screenOn", False) and self._keyboard_visible(),
+                    "keyboard_shown": info.get("screenOn", False) and await self._keyboard_visible(),
                 }
             except (ConnectionError, OSError):
                 if attempt == 2:
@@ -396,17 +401,23 @@ class Session:
 
     async def push(self, local: str, remote: str) -> None:
         self._require_active()
-        await asyncio.create_subprocess_exec(
+        proc = await asyncio.create_subprocess_exec(
             "adb", "-s", self._serial, "push", local, remote,
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
+        _, err = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"adb push failed: {err.decode().strip()}")
 
     async def pull(self, remote: str, local: str) -> None:
         self._require_active()
-        await asyncio.create_subprocess_exec(
+        proc = await asyncio.create_subprocess_exec(
             "adb", "-s", self._serial, "pull", remote, local,
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
+        _, err = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"adb pull failed: {err.decode().strip()}")
 
     # ── Waits ──
 
@@ -563,13 +574,14 @@ class Session:
 
     # ── Internals ──
 
-    def _keyboard_visible(self) -> bool:
+    async def _keyboard_visible(self) -> bool:
         try:
-            result = subprocess.run(
-                ["adb", "-s", self._serial, "shell", "dumpsys", "input_method"],
-                capture_output=True, text=True, timeout=5,
+            proc = await asyncio.create_subprocess_exec(
+                "adb", "-s", self._serial, "shell", "dumpsys", "input_method",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             )
-            return "mInputShown=true" in result.stdout
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            return "mInputShown=true" in out.decode()
         except Exception:
             return False
 
