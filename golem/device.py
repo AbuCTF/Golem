@@ -91,7 +91,7 @@ class AVDDevice(Device):
         device_profile: str = config.DEFAULT_DEVICE,
         headless: bool = True,
         gpu: str = "auto",
-        ram_mb: int = 2048,
+        ram_mb: int = 4096,
         extra_args: list[str] | None = None,
     ):
         self.name = name
