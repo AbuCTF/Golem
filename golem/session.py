@@ -10,7 +10,6 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -45,9 +44,13 @@ class ScreenState:
 class Session:
     """Named testing session bound to a device. Owns uiautomator2 connection."""
 
-    def __init__(self, name: str, device: Device, *, profile_dir: Path | None = None):
+    DEFAULT_TOLERANCE_MS = 5000
+
+    def __init__(self, name: str, device: Device, *, profile_dir: Path | None = None,
+                 device_spec: str = "avd"):
         self.name = name
         self.device = device
+        self.device_spec = device_spec
         self._state = State.HIBERNATED
         self._d = None  # uiautomator2 Device
         self._serial: str | None = None
@@ -56,6 +59,8 @@ class Session:
         self.context = ContextTracker()
         self._evidence: EvidenceStore | None = None
         self._health: HealthMonitor | None = None
+        self._frida = None
+        self.tolerance_ms = self.DEFAULT_TOLERANCE_MS
 
     @property
     def state(self) -> State:
@@ -130,11 +135,6 @@ class Session:
             # fix internet indicator — point captive portal at working URL
             "settings put global captive_portal_https_url https://www.google.com/generate_204",
             "settings put global captive_portal_http_url http://connectivitycheck.gstatic.com/generate_204",
-            # clear leftover proxy settings (survives reboot, breaks Chrome)
-            "settings put global http_proxy :0",
-            "settings delete global global_http_proxy_host",
-            "settings delete global global_http_proxy_port",
-            "settings delete global global_http_proxy_exclusion_list",
         ]
         # disable bloat that causes ANR and eats RAM
         bloat = [
@@ -160,6 +160,11 @@ class Session:
 
     async def close(self) -> None:
         """Disconnect u2 but keep device running. State preserved."""
+        if self._frida:
+            try:
+                await self._frida.detach()
+            except Exception:
+                pass
         self._state = State.HIBERNATED
         self._d = None
         self._save_meta()
@@ -167,6 +172,11 @@ class Session:
 
     async def destroy(self) -> None:
         """Shut down device and remove profile."""
+        if self._frida:
+            try:
+                await self._frida.detach()
+            except Exception:
+                pass
         await self.device.shutdown()
         self._state = State.HIBERNATED
         self._d = None
@@ -178,6 +188,10 @@ class Session:
     def _require_active(self) -> None:
         if self._state != State.ACTIVE or self._d is None:
             raise RuntimeError(f"session '{self.name}' is not active (state={self._state})")
+
+    def _require_serial(self) -> None:
+        if not self._serial:
+            raise RuntimeError(f"session '{self.name}' has no device serial (not launched)")
 
     async def _u2_reconnect(self) -> None:
         """Reconnect u2 if the connection dropped."""
@@ -272,7 +286,9 @@ class Session:
     async def tap(self, target: int | str | Element, **kwargs) -> dict:
         """Tap an element by index, text, resourceId, or Element object.
 
-        After tapping, returns the new screen_state.
+        String targets auto-retry for up to tolerance_ms (default 5s) if the
+        element isn't immediately visible. Index targets are instant (caller
+        already observed). After tapping, returns the new screen_state.
         """
         self._require_active()
         if isinstance(target, Element):
@@ -286,15 +302,40 @@ class Session:
             await self._u2_retry(self._d.click, x, y)
         elif isinstance(target, str):
             if target.startswith("id:"):
-                await self._u2_retry(self._d(resourceId=target[3:]).click, **kwargs)
+                await self._wait_and_tap_u2(
+                    lambda: self._d(resourceId=target[3:]),
+                    target, **kwargs)
             else:
-                await self._u2_retry(self._d(text=target).click, **kwargs)
+                await self._wait_and_tap_u2(
+                    lambda: self._d(text=target),
+                    target, **kwargs)
         else:
             raise TypeError(f"unsupported target type: {type(target)}")
 
         await asyncio.sleep(0.5)
         self.context.record_action("tap", target=str(target))
         return await self.screen_state()
+
+    async def _wait_and_tap_u2(self, selector_fn, target_desc: str, **kwargs) -> None:
+        """Wait for a u2 selector to find an element, then tap it."""
+        deadline = time.monotonic() + (self.tolerance_ms / 1000)
+        last_err = None
+        while True:
+            try:
+                sel = selector_fn()
+                if sel.exists:
+                    sel.click(**kwargs)
+                    return
+                last_err = None
+            except (ConnectionError, OSError) as e:
+                last_err = e
+                await self._u2_reconnect()
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.3)
+        if last_err:
+            raise last_err
+        raise LookupError(f"element '{target_desc}' not found within {self.tolerance_ms}ms")
 
     async def type_text(self, text: str, *, clear: bool = False) -> None:
         """Type text into the currently focused element."""
@@ -554,21 +595,24 @@ class Session:
 
     # ── Proxy / cert ──
 
-    async def proxy_install_cert(self, cert_path: Path | None = None) -> None:
-        """Install CA cert into the system trust store (requires root)."""
-        self._require_active()
+    async def proxy_install_cert(self, cert_path: Path | None = None) -> str:
+        """Install CA cert into the system trust store (requires root).
+
+        Returns "apex", "remount", or "legacy" indicating which method was used.
+        """
+        self._require_serial()
         from golem.proxy import install_ca_cert
-        await install_ca_cert(self._serial, cert_path)
+        return await install_ca_cert(self._serial, cert_path)
 
     async def proxy_configure(self, host: str = "10.0.2.2", port: int = 8082) -> None:
         """Set device HTTP proxy to point at mitmproxy."""
-        self._require_active()
+        self._require_serial()
         from golem.proxy import configure_proxy
         await configure_proxy(self._serial, host, port)
 
     async def proxy_clear(self) -> None:
         """Remove proxy configuration from device."""
-        self._require_active()
+        self._require_serial()
         from golem.proxy import clear_proxy
         await clear_proxy(self._serial)
 
@@ -591,6 +635,7 @@ class Session:
             "state": self._state.value,
             "serial": self._serial,
             "backend": type(self.device).__name__,
+            "device_spec": self.device_spec,
         }
         meta_path = self._profile_dir / "golem_meta.json"
         self._profile_dir.mkdir(parents=True, exist_ok=True)
@@ -602,7 +647,8 @@ class Session:
         if not meta_path.exists():
             raise FileNotFoundError(f"no golem_meta.json in {path}")
         meta = json.loads(meta_path.read_text())
-        session = cls(meta["name"], device, profile_dir=path)
+        session = cls(meta["name"], device, profile_dir=path,
+                      device_spec=meta.get("device_spec", "avd"))
         session._state = State(meta.get("state", "hibernated"))
         session._serial = meta.get("serial")
         return session

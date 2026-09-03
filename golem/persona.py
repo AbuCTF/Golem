@@ -162,8 +162,23 @@ def generate_persona(seed: str, *, profile_index: int | None = None) -> DevicePe
     def _digits(n: int) -> str:
         return "".join(rng.choices("0123456789", k=n))
 
+    def _luhn_check_digit(partial: str) -> str:
+        digits = [int(d) for d in partial]
+        total = 0
+        for i, d in enumerate(reversed(digits)):
+            if i % 2 == 0:
+                d *= 2
+                if d > 9:
+                    d -= 9
+            total += d
+        return str((10 - total % 10) % 10)
+
     build_id = f"AP2A.{rng.randint(230901, 261231)}.{_digits(3)}"
     build_num = _digits(8)
+
+    imei_base = f"35{_digits(12)}"
+    iccid_base = f"8901{_digits(14)}"
+    op = carrier["operator"]
 
     return DevicePersona(
         seed=seed,
@@ -176,12 +191,12 @@ def generate_persona(seed: str, *, profile_index: int | None = None) -> DevicePe
         hardware=profile["hardware"],
         fingerprint=f"{profile['fingerprint_prefix']}{build_id}/{build_num}:user/release-keys",
         android_id=_hex(16),
-        imei=f"35{_digits(13)}",
+        imei=imei_base + _luhn_check_digit(imei_base),
         serial_number=f"{profile['device'].upper()[:4]}{_hex(8).upper()}",
-        sim_operator=carrier["operator"],
+        sim_operator=op,
         sim_operator_name=carrier["operator_name"],
-        sim_serial=f"8901{_digits(16)}",
-        subscriber_id=f"{carrier['operator']}{_digits(10)}",
+        sim_serial=iccid_base + _luhn_check_digit(iccid_base),
+        subscriber_id=f"{op}{_digits(15 - len(op))}",
         wifi_mac=":".join(_hex(2) for _ in range(6)),
         bluetooth_mac=":".join(_hex(2) for _ in range(6)),
         build_id=build_id,

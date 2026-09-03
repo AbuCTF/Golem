@@ -52,7 +52,7 @@ class FridaBridge:
         log.info("frida connected to %s", self._serial)
 
     async def ensure_server(self) -> None:
-        """Ensure frida-server is running on the device."""
+        """Ensure frida-server is running on the device. Auto-downloads if missing."""
         proc = await asyncio.create_subprocess_exec(
             "adb", "-s", self._serial, "shell",
             "ps -A | grep frida-server",
@@ -72,12 +72,9 @@ class FridaBridge:
         )
         out, _ = await check.communicate()
         if FRIDA_SERVER_PATH.encode() not in out:
-            raise RuntimeError(
-                f"frida-server not found at {FRIDA_SERVER_PATH} on device. "
-                "Push it first: adb push frida-server /data/local/tmp/ && "
-                "adb shell chmod 755 /data/local/tmp/frida-server"
-            )
+            await self._auto_download_server()
 
+        # start as root
         await asyncio.create_subprocess_exec(
             "adb", "-s", self._serial, "shell",
             f"su -c '{FRIDA_SERVER_PATH} -D &'",
@@ -97,6 +94,60 @@ class FridaBridge:
                 log.info("frida-server started on %s", self._serial)
                 return
         raise RuntimeError("frida-server failed to start within 5s")
+
+    async def _auto_download_server(self) -> None:
+        """Download frida-server matching the installed frida Python version."""
+        import frida
+        version = frida.__version__
+
+        arch_proc = await asyncio.create_subprocess_exec(
+            "adb", "-s", self._serial, "shell", "getprop", "ro.product.cpu.abi",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        arch_out, _ = await arch_proc.communicate()
+        abi = arch_out.decode().strip()
+        arch_map = {"x86_64": "x86_64", "x86": "x86", "arm64-v8a": "arm64", "armeabi-v7a": "arm"}
+        arch = arch_map.get(abi, abi)
+
+        filename = f"frida-server-{version}-android-{arch}"
+        url = f"https://github.com/frida/frida/releases/download/{version}/{filename}.xz"
+
+        cache_dir = Path.home() / ".cache" / "golem" / "frida"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cached = cache_dir / filename
+
+        if not cached.exists():
+            log.info("downloading frida-server %s for %s...", version, arch)
+            dl = await asyncio.create_subprocess_exec(
+                "curl", "-fSL", "-o", str(cached) + ".xz", url,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            _, dl_err = await dl.communicate()
+            if dl.returncode != 0:
+                raise RuntimeError(f"failed to download frida-server: {dl_err.decode().strip()}")
+            xz = await asyncio.create_subprocess_exec(
+                "xz", "-d", str(cached) + ".xz",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            await xz.communicate()
+            if not cached.exists():
+                raise RuntimeError("xz decompression failed")
+
+        log.info("pushing frida-server to device...")
+        push = await asyncio.create_subprocess_exec(
+            "adb", "-s", self._serial, "push", str(cached), FRIDA_SERVER_PATH,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, push_err = await push.communicate()
+        if push.returncode != 0:
+            raise RuntimeError(f"adb push frida-server failed: {push_err.decode().strip()}")
+
+        chmod = await asyncio.create_subprocess_exec(
+            "adb", "-s", self._serial, "shell", "chmod", "755", FRIDA_SERVER_PATH,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await chmod.communicate()
+        log.info("frida-server %s (%s) installed on device", version, arch)
 
     async def attach(self, target: str | int) -> None:
         """Attach to a running process by name or PID."""

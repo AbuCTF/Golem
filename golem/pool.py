@@ -73,7 +73,7 @@ class Pool:
             raise RuntimeError(f"max sessions ({self.max_sessions}) reached — close one first")
 
         device = create_device(name, device_spec, headless=headless, **device_kwargs)
-        session = Session(name, device)
+        session = Session(name, device, device_spec=device_spec)
         self._sessions[name] = session
 
         if launch:
@@ -97,7 +97,7 @@ class Pool:
             session = Session.from_profile_dir(profile, device)
             self._sessions[name] = session
 
-        if launch and session.state != State.ACTIVE:
+        if launch and (session.state != State.ACTIVE or session._d is None):
             await session.launch()
         return session
 

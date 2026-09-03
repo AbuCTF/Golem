@@ -51,6 +51,7 @@ instrumentation:
   cert-install    install mitmproxy CA cert on device
   proxy-on        configure device to use proxy
   proxy-off       remove proxy from device
+  intercept       one-command traffic interception (cert + proxy + capture)
   frida-scripts   list available Frida scripts
 
 analysis:
@@ -174,11 +175,19 @@ def main():
     # proxy-on
     p = sub.add_parser("proxy-on")
     p.add_argument("name")
+    p.add_argument("--host", default="10.0.2.2", help="proxy host (default: 10.0.2.2 for emulator)")
     p.add_argument("--port", type=int, default=8082)
 
     # proxy-off
     p = sub.add_parser("proxy-off")
     p.add_argument("name")
+
+    # intercept — one-command traffic interception
+    p = sub.add_parser("intercept")
+    p.add_argument("name")
+    p.add_argument("--host", default="10.0.2.2", help="proxy host (default: 10.0.2.2 for emulator)")
+    p.add_argument("--port", type=int, default=8082)
+    p.add_argument("--filters", nargs="*", help="host/path filters for traffic capture")
 
     # diff
     p = sub.add_parser("diff")
@@ -394,18 +403,41 @@ async def _run(args):
             from pathlib import Path
             session = await pool.get(args.name, launch=True)
             cert = Path(args.cert) if args.cert else None
-            await session.proxy_install_cert(cert)
-            print("CA cert installed — reboot device to activate")
+            method = await session.proxy_install_cert(cert)
+            if method == "remount":
+                print("CA cert installed (persistent)")
+            else:
+                print(f"CA cert installed via {method} overlay (active now, re-run after reboot)")
 
         elif cmd == "proxy-on":
             session = await pool.get(args.name, launch=True)
-            await session.proxy_configure(port=args.port)
-            print(f"proxy configured → 10.0.2.2:{args.port}")
+            await session.proxy_configure(host=args.host, port=args.port)
+            print(f"proxy configured → {args.host}:{args.port}")
 
         elif cmd == "proxy-off":
             session = await pool.get(args.name, launch=True)
             await session.proxy_clear()
             print("proxy cleared")
+
+        elif cmd == "intercept":
+            session = await pool.get(args.name, launch=True)
+            method = await session.proxy_install_cert()
+            print(f"cert installed ({method})")
+            from golem.proxy import ProxyServer
+            proxy = ProxyServer(port=args.port)
+            await proxy.start(filters=args.filters)
+            print(f"mitmproxy listening on 127.0.0.1:{args.port}")
+            await session.proxy_configure(host=args.host, port=args.port)
+            print(f"device proxied → {args.host}:{args.port}")
+            print(f"capturing traffic... (ctrl-c to stop)")
+            try:
+                await asyncio.Event().wait()
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                pass
+            finally:
+                await session.proxy_clear()
+                await proxy.stop()
+                print("proxy stopped, device restored")
 
         elif cmd == "diff":
             session = await pool.get(args.name, launch=True)

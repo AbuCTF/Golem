@@ -17,6 +17,14 @@ from typing import Any, Callable
 
 log = logging.getLogger(__name__)
 
+# Google system services use cert pinning and will ANR if proxied through mitmproxy.
+# Pass these through untouched.
+PROXY_IGNORE_HOSTS = [
+    r".*\.google\.com", r".*\.googleapis\.com", r".*\.gstatic\.com",
+    r".*\.tenor\.com", r".*\.android\.com", r".*\.google\.[a-z]+",
+    r".*\.googlevideo\.com", r".*\.gvt[0-9]+\.com", r".*\.1e100\.net",
+]
+
 
 @dataclass
 class CapturedFlow:
@@ -136,32 +144,47 @@ class ProxyServer:
         self._master = None
         self._thread: threading.Thread | None = None
         self._running = False
+        self._start_error: Exception | None = None
 
     async def start(self, *, filters: list[str] | None = None,
-                    on_flow: Callable | None = None) -> None:
+                    on_flow: Callable | None = None,
+                    ignore_hosts: list[str] | None = None) -> None:
         """Start the proxy server in a background thread."""
         if self._running:
             log.info("proxy already running on %s:%d", self.host, self.port)
             return
 
         self.addon = GolemAddon(on_flow=on_flow, filters=filters)
+        _ignore = ignore_hosts if ignore_hosts is not None else PROXY_IGNORE_HOSTS
+        self._start_error = None
 
         def _run():
             from mitmproxy.options import Options
             from mitmproxy.tools.dump import DumpMaster
 
-            opts = Options(listen_host=self.host, listen_port=self.port)
-            self._master = DumpMaster(opts)
-            self._master.addons.add(self.addon)
-            log.info("proxy starting on %s:%d", self.host, self.port)
-            self._running = True
-            self._master.run()
-            self._running = False
+            try:
+                opts = Options(
+                    listen_host=self.host,
+                    listen_port=self.port,
+                    ignore_hosts=_ignore,
+                )
+                self._master = DumpMaster(opts)
+                self._master.addons.add(self.addon)
+                log.info("proxy starting on %s:%d (ignoring %d host patterns)", self.host, self.port, len(_ignore))
+                self._running = True
+                self._master.run()
+            except Exception as e:
+                self._start_error = e
+                log.error("proxy thread failed: %s", e)
+            finally:
+                self._running = False
 
         self._thread = threading.Thread(target=_run, daemon=True, name="golem-proxy")
         self._thread.start()
 
         for _ in range(30):
+            if self._start_error:
+                raise RuntimeError(f"proxy failed to start: {self._start_error}") from self._start_error
             if self._running:
                 break
             await asyncio.sleep(0.5)
@@ -199,13 +222,13 @@ class ProxyServer:
         return self._running
 
 
-async def install_ca_cert(serial: str, cert_path: Path | None = None) -> None:
+async def install_ca_cert(serial: str, cert_path: Path | None = None) -> str:
     """Install a CA certificate into the Android system trust store.
 
-    Requires root access. Works by:
-    1. Computing the OpenSSL hash of the cert
-    2. Pushing it to /system/etc/security/cacerts/ with the hash filename
-    3. Setting permissions
+    Handles both pre-14 and Android 14+ (APEX conscrypt) cert stores.
+    Active immediately — no reboot required.
+
+    Returns "apex", "remount", or "legacy" indicating which method was used.
     """
     if cert_path is None:
         cert_path = Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem"
@@ -213,14 +236,15 @@ async def install_ca_cert(serial: str, cert_path: Path | None = None) -> None:
     if not cert_path.exists():
         raise FileNotFoundError(f"CA cert not found at {cert_path}")
 
-    import subprocess
-    hash_result = subprocess.run(
-        ["openssl", "x509", "-inform", "PEM", "-subject_hash_old", "-in", str(cert_path), "-noout"],
-        capture_output=True, text=True,
+    hash_proc = await asyncio.create_subprocess_exec(
+        "openssl", "x509", "-inform", "PEM", "-subject_hash_old", "-in", str(cert_path), "-noout",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    if hash_result.returncode != 0:
-        raise RuntimeError(f"openssl hash failed: {hash_result.stderr}")
-    cert_hash = hash_result.stdout.strip()
+    hash_out, hash_err = await hash_proc.communicate()
+    if hash_proc.returncode != 0:
+        raise RuntimeError(f"openssl hash failed: {hash_err.decode()}")
+    cert_hash = hash_out.decode().strip()
     dest_name = f"{cert_hash}.0"
 
     log.info("installing CA cert %s as %s on %s", cert_path.name, dest_name, serial)
@@ -234,33 +258,54 @@ async def install_ca_cert(serial: str, cert_path: Path | None = None) -> None:
         out, err = await proc.communicate()
         return out.decode(), err.decode(), proc.returncode
 
-    await _adb("root")
-    await asyncio.sleep(1)
+    root_out, root_err, root_rc = await _adb("root")
+    root_msg = (root_out + root_err).lower()
+    if root_rc != 0 or "cannot run as root" in root_msg:
+        raise RuntimeError(f"adb root failed (device must be rooted for cert installation): {(root_out + root_err).strip()}")
+    for _ in range(10):
+        await asyncio.sleep(1)
+        try:
+            probe_out, _, probe_rc = await _adb("shell", "echo", "ok")
+            if probe_rc == 0 and "ok" in probe_out:
+                break
+        except Exception:
+            pass
 
-    # Try direct remount first (works on writable-system images)
+    api_out, _, _ = await _adb("shell", "getprop", "ro.build.version.sdk")
+    api_level = int(api_out.strip()) if api_out.strip().isdigit() else 0
+
+    staging = "/data/local/tmp/golem_cacerts"
+    await _adb("push", str(cert_path), f"/data/local/tmp/{dest_name}")
+
+    # Android 14+ (API 34): certs moved to APEX conscrypt module
+    if api_level >= 34:
+        apex_certs = "/apex/com.android.conscrypt/cacerts"
+        out, _, rc = await _adb("shell", "ls", apex_certs)
+        if rc == 0:
+            result = await _install_apex_cert(serial, dest_name, apex_certs, staging, _adb)
+            if result:
+                return result
+
+    # Try remount for persistent install + immediate overlay
     _, remount_err, remount_rc = await _adb("remount")
     if remount_rc == 0 and "bootloader" not in remount_err.lower():
         await asyncio.sleep(1)
-        await _adb("push", str(cert_path), f"/system/etc/security/cacerts/{dest_name}")
+        await _adb("shell", "cp", f"/data/local/tmp/{dest_name}",
+                    f"/system/etc/security/cacerts/{dest_name}")
         await _adb("shell", "chmod", "644", f"/system/etc/security/cacerts/{dest_name}")
         out, _, _ = await _adb("shell", "ls", f"/system/etc/security/cacerts/{dest_name}")
         if dest_name in out:
             log.info("CA cert installed via remount as %s", dest_name)
-            return
+            return "remount"
 
-    # Fallback: tmpfs overlay (Android 11+ with read-only /system)
-    log.info("remount failed, using tmpfs overlay method")
-    staging = "/data/local/tmp/golem_cacerts"
-
+    # Fallback: tmpfs overlay on /system/etc/security/cacerts (pre-14)
+    log.info("using tmpfs overlay on system cacerts")
     await _adb("shell", "rm", "-rf", staging)
     await _adb("shell", "mkdir", "-p", staging)
-    # Copy existing system certs to staging
     await _adb("shell", "cp", "/system/etc/security/cacerts/*", staging + "/")
-    # Push our cert to staging
-    await _adb("push", str(cert_path), f"{staging}/{dest_name}")
+    await _adb("shell", "cp", f"/data/local/tmp/{dest_name}", f"{staging}/{dest_name}")
     await _adb("shell", "chmod", "644", f"{staging}/{dest_name}")
 
-    # Mount overlay
     await _adb("shell", "mount", "-t", "tmpfs", "tmpfs", "/system/etc/security/cacerts")
     await _adb("shell", "cp", staging + "/*", "/system/etc/security/cacerts/")
     await _adb("shell", "chmod", "644", "/system/etc/security/cacerts/*")
@@ -268,14 +313,136 @@ async def install_ca_cert(serial: str, cert_path: Path | None = None) -> None:
 
     out, _, _ = await _adb("shell", "ls", f"/system/etc/security/cacerts/{dest_name}")
     if dest_name in out:
-        log.info("CA cert installed via tmpfs overlay as %s (persists until reboot)", dest_name)
-    else:
-        raise RuntimeError("CA cert install failed via both remount and overlay methods")
+        log.info("CA cert installed via legacy tmpfs overlay as %s", dest_name)
+        return "legacy"
+
+    raise RuntimeError("CA cert install failed — all methods exhausted")
+
+
+async def _install_apex_cert(serial, dest_name, apex_certs, staging, _adb) -> str | None:
+    """Install cert into APEX conscrypt cert store (Android 14+).
+
+    Uses nsenter into init's mount namespace so the overlay is visible to all
+    processes, then restarts Zygote so new app processes inherit the mount.
+    """
+    log.info("Android 14+ detected — installing into APEX conscrypt")
+
+    await _adb("shell", "rm", "-rf", staging)
+    await _adb("shell", "mkdir", "-p", staging)
+    await _adb("shell", "cp", f"{apex_certs}/*", staging + "/")
+    await _adb("shell", "cp", f"/data/local/tmp/{dest_name}", f"{staging}/{dest_name}")
+    await _adb("shell", "chmod", "644", f"{staging}/{dest_name}")
+
+    mount_cmds = [
+        f"mount -t tmpfs tmpfs {apex_certs}",
+        f"cp {staging}/* {apex_certs}/",
+        f"chmod 644 {apex_certs}/*",
+        f"chcon u:object_r:system_file:s0 {apex_certs}/*",
+    ]
+
+    # try nsenter (global mount namespace)
+    for cmd in mount_cmds:
+        await _adb("shell", "nsenter", "--mount=/proc/1/ns/mnt", "--", "sh", "-c", cmd)
+
+    out, _, _ = await _adb("shell", "ls", f"{apex_certs}/{dest_name}")
+    if dest_name not in out:
+        # fallback: direct mount
+        log.info("nsenter failed, trying direct APEX mount")
+        await _adb("shell", "mount", "-t", "tmpfs", "tmpfs", apex_certs)
+        await _adb("shell", "cp", staging + "/*", apex_certs + "/")
+        await _adb("shell", "chmod", "644", apex_certs + "/*")
+        await _adb("shell", "chcon", "u:object_r:system_file:s0", apex_certs + "/*")
+
+        out, _, _ = await _adb("shell", "ls", f"{apex_certs}/{dest_name}")
+        if dest_name not in out:
+            return None
+
+    log.info("APEX overlay mounted — restarting Zygote to apply")
+    await _adb("shell", "setprop", "ctl.restart", "zygote")
+
+    # wait for framework to recover
+    for _ in range(60):
+        await asyncio.sleep(2)
+        boot_out, _, _ = await _adb("shell", "getprop", "sys.boot_completed")
+        svc_out, _, _ = await _adb("shell", "service", "check", "activity")
+        if boot_out.strip() == "1" and "found" in svc_out:
+            log.info("framework recovered after Zygote restart")
+            return "apex"
+
+    log.warning("framework slow to recover after Zygote restart — cert installed but apps may need manual restart")
+    return "apex"
+
+
+async def inject_cert_into_apps(serial: str, cert_path: Path | None = None) -> int:
+    """Inject CA cert into running app processes' mount namespaces.
+
+    Alternative to Zygote restart — injects the cert overlay into each
+    running app's view of the cert store so HTTPS interception works
+    immediately without killing any apps. Returns the number of processes
+    patched.
+    """
+    if cert_path is None:
+        cert_path = Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem"
+
+    hash_proc = await asyncio.create_subprocess_exec(
+        "openssl", "x509", "-inform", "PEM", "-subject_hash_old", "-in", str(cert_path), "-noout",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    hash_out, _ = await hash_proc.communicate()
+    cert_hash = hash_out.decode().strip()
+    dest_name = f"{cert_hash}.0"
+
+    async def _adb(*args):
+        proc = await asyncio.create_subprocess_exec(
+            "adb", "-s", serial, *args,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await proc.communicate()
+        return out.decode(), err.decode(), proc.returncode
+
+    api_out, _, _ = await _adb("shell", "getprop", "ro.build.version.sdk")
+    api_level = int(api_out.strip()) if api_out.strip().isdigit() else 0
+    cert_dir = "/apex/com.android.conscrypt/cacerts" if api_level >= 34 else "/system/etc/security/cacerts"
+    staging = "/data/local/tmp/golem_cacerts"
+
+    out, _, _ = await _adb("shell", f"ls {staging}/{dest_name}")
+    if dest_name not in out:
+        log.info("cert not staged yet, run install_ca_cert first")
+        return 0
+
+    ps_out, _, _ = await _adb("shell", "ps", "-A", "-o", "PID,USER,NAME")
+    patched = 0
+    for line in ps_out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid, user, name = parts
+        if not user.startswith("u0_a"):
+            continue
+        try:
+            int(pid)
+        except ValueError:
+            continue
+
+        mount_script = (
+            f"nsenter --mount=/proc/{pid}/ns/mnt -- sh -c '"
+            f"mount -t tmpfs tmpfs {cert_dir} 2>/dev/null; "
+            f"cp {staging}/* {cert_dir}/ 2>/dev/null; "
+            f"chmod 644 {cert_dir}/* 2>/dev/null'"
+        )
+        _, _, rc = await _adb("shell", "su", "-c", mount_script)
+        if rc == 0:
+            patched += 1
+
+    log.info("injected cert into %d app processes on %s", patched, serial)
+    return patched
 
 
 async def configure_proxy(serial: str, host: str = "10.0.2.2", port: int = 8082) -> None:
     """Configure the Android emulator to use our proxy.
 
+    Also disables captive portal detection and background ANR dialogs to prevent
+    Google system services from causing cascading failures through the proxy.
     10.0.2.2 is the emulator's alias for the host machine's loopback.
     """
     async def _adb(*args):
@@ -284,14 +451,22 @@ async def configure_proxy(serial: str, host: str = "10.0.2.2", port: int = 8082)
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.communicate()
+        out, err = await proc.communicate()
+        return out.decode(), err.decode(), proc.returncode
 
-    await _adb("shell", "settings", "put", "global", "http_proxy", f"{host}:{port}")
+    # disable captive portal + background ANR before enabling proxy
+    await _adb("shell", "settings", "put", "global", "captive_portal_detection_enabled", "0")
+    await _adb("shell", "settings", "put", "global", "captive_portal_mode", "0")
+    await _adb("shell", "settings", "put", "secure", "anr_show_background", "0")
+
+    out, err, rc = await _adb("shell", "settings", "put", "global", "http_proxy", f"{host}:{port}")
+    if rc != 0:
+        raise RuntimeError(f"failed to set proxy on {serial}: {err.strip()}")
     log.info("proxy configured on %s → %s:%d", serial, host, port)
 
 
 async def clear_proxy(serial: str) -> None:
-    """Remove proxy configuration from the device."""
+    """Remove proxy configuration and restore captive portal + ANR settings."""
     async def _adb(*args):
         proc = await asyncio.create_subprocess_exec(
             "adb", "-s", serial, *args,
@@ -304,4 +479,8 @@ async def clear_proxy(serial: str) -> None:
     await _adb("shell", "settings", "delete", "global", "global_http_proxy_host")
     await _adb("shell", "settings", "delete", "global", "global_http_proxy_port")
     await _adb("shell", "settings", "delete", "global", "global_http_proxy_exclusion_list")
+    # restore settings that configure_proxy disabled
+    await _adb("shell", "settings", "put", "global", "captive_portal_detection_enabled", "1")
+    await _adb("shell", "settings", "put", "global", "captive_portal_mode", "1")
+    await _adb("shell", "settings", "put", "secure", "anr_show_background", "1")
     log.info("proxy cleared on %s", serial)

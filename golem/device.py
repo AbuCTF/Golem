@@ -121,20 +121,47 @@ class AVDDevice(Device):
         if gpu == "auto" and self.headless:
             gpu = "swiftshader_indirect"
 
-        try:
-            self._serial = await self._boot_with_gpu(gpu)
-        except RuntimeError as e:
-            if gpu != "swiftshader_indirect" and "exited with code" in str(e):
-                log.warning("emulator crashed with gpu=%s, retrying with swiftshader_indirect", gpu)
-                self._serial = await self._boot_with_gpu("swiftshader_indirect")
-            else:
-                raise
+        has_snapshot = self._snapshot_exists("golem_ready")
 
-        await self.wait_boot()
-        await self._post_boot_setup()
+        try:
+            try:
+                extra = ["-snapshot", "golem_ready", "-no-snapshot-save"] if has_snapshot else []
+                self._serial = await self._boot_with_gpu(gpu, extra_snapshot_args=extra)
+            except RuntimeError as e:
+                if gpu != "swiftshader_indirect" and "exited with code" in str(e):
+                    log.warning("emulator crashed with gpu=%s, retrying with swiftshader_indirect", gpu)
+                    self._serial = await self._boot_with_gpu("swiftshader_indirect")
+                else:
+                    raise
+
+            await self.wait_boot()
+
+            if has_snapshot:
+                log.info("AVD %s resumed from golem_ready snapshot", self._avd_name)
+            else:
+                await self._post_boot_setup()
+                await self.snapshot_save("golem_ready")
+                log.info("AVD %s golem_ready snapshot saved for next boot", self._avd_name)
+        except BaseException:
+            await self.shutdown()
+            raise
+
         return self._serial
 
-    async def _boot_with_gpu(self, gpu: str) -> str:
+    def _snapshot_exists(self, snap_name: str) -> bool:
+        """Check if a named snapshot exists in the AVD directory."""
+        import os
+        avd_home = os.environ.get("ANDROID_AVD_HOME")
+        if not avd_home:
+            xdg = os.environ.get("XDG_CONFIG_HOME")
+            if xdg:
+                avd_home = os.path.join(xdg, ".android", "avd")
+            else:
+                avd_home = os.path.join(os.path.expanduser("~"), ".android", "avd")
+        snap_dir = Path(avd_home) / f"{self._avd_name}.avd" / "snapshots" / snap_name
+        return snap_dir.is_dir()
+
+    async def _boot_with_gpu(self, gpu: str, *, extra_snapshot_args: list[str] | None = None) -> str:
         cmd = [
             str(config.EMULATOR_BIN),
             "-avd", self._avd_name,
@@ -142,8 +169,11 @@ class AVDDevice(Device):
             "-memory", str(self.ram_mb),
             "-cores", "4",
             "-no-boot-anim",
-            "-no-snapshot-save",
         ]
+        if extra_snapshot_args:
+            cmd.extend(extra_snapshot_args)
+        else:
+            cmd.append("-no-snapshot-save")
         if self.headless:
             cmd.extend(["-no-window", "-no-audio"])
         cmd.extend(["-writable-system"])

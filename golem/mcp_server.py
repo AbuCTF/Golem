@@ -256,6 +256,103 @@ def create_mcp_server():
                     "required": ["session"],
                 },
             ),
+            Tool(
+                name="golem_create",
+                description="Create a new Android session.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "device_spec": {"type": "string", "default": "avd"},
+                        "headless": {"type": "boolean", "default": True},
+                    },
+                    "required": ["name"],
+                },
+            ),
+            Tool(
+                name="golem_close",
+                description="Hibernate a session (keep device running).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"session": {"type": "string"}},
+                    "required": ["session"],
+                },
+            ),
+            Tool(
+                name="golem_destroy",
+                description="Shut down device and remove session.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"session": {"type": "string"}},
+                    "required": ["session"],
+                },
+            ),
+            Tool(
+                name="golem_cert_install",
+                description="Install mitmproxy CA certificate on the device.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"session": {"type": "string"}},
+                    "required": ["session"],
+                },
+            ),
+            Tool(
+                name="golem_proxy_on",
+                description="Configure device to route traffic through mitmproxy.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {"type": "string"},
+                        "host": {"type": "string", "default": "10.0.2.2"},
+                        "port": {"type": "integer", "default": 8082},
+                    },
+                    "required": ["session"],
+                },
+            ),
+            Tool(
+                name="golem_proxy_off",
+                description="Remove proxy configuration from device.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"session": {"type": "string"}},
+                    "required": ["session"],
+                },
+            ),
+            Tool(
+                name="golem_app_stop",
+                description="Stop a running app.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {"type": "string"},
+                        "package": {"type": "string"},
+                    },
+                    "required": ["session", "package"],
+                },
+            ),
+            Tool(
+                name="golem_app_list",
+                description="List installed third-party apps.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"session": {"type": "string"}},
+                    "required": ["session"],
+                },
+            ),
+            Tool(
+                name="golem_frida_detach",
+                description="Detach Frida from the current process.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"session": {"type": "string"}},
+                    "required": ["session"],
+                },
+            ),
+            Tool(
+                name="golem_frida_scripts",
+                description="List available Frida scripts.",
+                inputSchema={"type": "object", "properties": {}},
+            ),
         ]
 
     @server.call_tool()
@@ -266,7 +363,36 @@ def create_mcp_server():
                 sessions = pool.list()
                 return [TextContent(type="text", text=json.dumps(sessions, indent=2))]
 
+            if name == "golem_frida_scripts":
+                from golem.session import Session
+                scripts = Session.frida_scripts_available()
+                return [TextContent(type="text", text=json.dumps(scripts))]
+
+            if name == "golem_create":
+                pool = await _get_pool()
+                session = await pool.create(
+                    arguments["name"],
+                    device_spec=arguments.get("device_spec", "avd"),
+                    headless=arguments.get("headless", True),
+                )
+                info = await session.device.info()
+                return [TextContent(type="text", text=json.dumps({
+                    "name": session.name, "serial": info.serial,
+                    "model": info.model, "api": info.api_level,
+                }))]
+
             session_name = arguments.get("session")
+
+            if name == "golem_close":
+                pool = await _get_pool()
+                await pool.close(session_name)
+                return [TextContent(type="text", text=f"session '{session_name}' hibernated")]
+
+            if name == "golem_destroy":
+                pool = await _get_pool()
+                await pool.destroy(session_name)
+                return [TextContent(type="text", text=f"session '{session_name}' destroyed")]
+
             session = await _get_session(session_name)
 
             if name == "golem_observe":
@@ -285,7 +411,8 @@ def create_mcp_server():
 
             elif name == "golem_type":
                 await session.type_text(arguments["text"], clear=arguments.get("clear", False))
-                return [TextContent(type="text", text="typed")]
+                state = await session.screen_state()
+                return [TextContent(type="text", text=json.dumps({"action": "typed", **state}))]
 
             elif name == "golem_fill":
                 target = arguments["target"]
@@ -294,15 +421,18 @@ def create_mcp_server():
                 except (ValueError, TypeError):
                     pass
                 await session.fill(target, arguments["text"])
-                return [TextContent(type="text", text="filled")]
+                state = await session.screen_state()
+                return [TextContent(type="text", text=json.dumps({"action": "filled", **state}))]
 
             elif name == "golem_press":
                 await session.press(arguments["key"])
-                return [TextContent(type="text", text=f"pressed {arguments['key']}")]
+                state = await session.screen_state()
+                return [TextContent(type="text", text=json.dumps({"action": f"pressed {arguments['key']}", **state}))]
 
             elif name == "golem_swipe":
                 await session.swipe(arguments.get("direction", "up"))
-                return [TextContent(type="text", text=f"swiped {arguments.get('direction', 'up')}")]
+                state = await session.screen_state()
+                return [TextContent(type="text", text=json.dumps({"action": f"swiped {arguments.get('direction', 'up')}", **state}))]
 
             elif name == "golem_screenshot":
                 png = await session.screenshot(arguments.get("path"))
@@ -366,6 +496,32 @@ def create_mcp_server():
                 }
                 return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
+            elif name == "golem_cert_install":
+                method = await session.proxy_install_cert()
+                return [TextContent(type="text", text=f"cert installed ({method})")]
+
+            elif name == "golem_proxy_on":
+                host = arguments.get("host", "10.0.2.2")
+                port = arguments.get("port", 8082)
+                await session.proxy_configure(host=host, port=port)
+                return [TextContent(type="text", text=f"proxy configured → {host}:{port}")]
+
+            elif name == "golem_proxy_off":
+                await session.proxy_clear()
+                return [TextContent(type="text", text="proxy cleared")]
+
+            elif name == "golem_app_stop":
+                await session.app_stop(arguments["package"])
+                return [TextContent(type="text", text=f"stopped {arguments['package']}")]
+
+            elif name == "golem_app_list":
+                apps = await session.app_list()
+                return [TextContent(type="text", text=json.dumps(sorted(apps)))]
+
+            elif name == "golem_frida_detach":
+                await session.frida_detach()
+                return [TextContent(type="text", text="frida detached")]
+
             else:
                 return [TextContent(type="text", text=f"unknown tool: {name}")]
 
@@ -379,7 +535,12 @@ def main():
     """Run the MCP server over stdio."""
     import mcp.server.stdio
     server = create_mcp_server()
-    mcp.server.stdio.run(server)
+    asyncio.run(_run_mcp(server))
+
+
+async def _run_mcp(server):
+    import mcp.server.stdio
+    await mcp.server.stdio.run_async(server)
 
 
 if __name__ == "__main__":

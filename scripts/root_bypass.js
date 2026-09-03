@@ -27,10 +27,10 @@ Java.perform(function () {
         "/data/adb/magisk", "/sbin/.magisk",
     ];
 
-    // 1. File.exists — hide root files
+    // 1. File.exists — hide root files (chains with any existing hook)
     try {
         var File = Java.use("java.io.File");
-        var origExists = File.exists;
+        var prevExists = File.exists.implementation;
         File.exists.implementation = function () {
             var path = this.getAbsolutePath();
             for (var i = 0; i < SU_PATHS.length; i++) {
@@ -40,9 +40,9 @@ Java.perform(function () {
                 if (path === ROOT_FILES[i]) return false;
             }
             if (path.indexOf("magisk") !== -1 || path.indexOf("supersu") !== -1) return false;
-            return origExists.call(this);
+            return prevExists ? prevExists.call(this) : this.exists.call(this);
         };
-        send({ type: "hook", target: "File.exists", status: "filtering root paths" });
+        send({ type: "hook", target: "File.exists", status: "filtering root paths (chained)" });
     } catch (e) {}
 
     // 2. Runtime.exec — block su execution attempts

@@ -91,10 +91,10 @@ Java.perform(function () {
         };
     } catch (e) {}
 
-    // 5. File checks — hide emulator-specific files
+    // 5. File checks — hide emulator-specific files (chains with any existing hook)
     try {
         var File = Java.use("java.io.File");
-        var origExists = File.exists;
+        var prevExists = File.exists.implementation;
         File.exists.implementation = function () {
             var path = this.getAbsolutePath();
             var emuFiles = [
@@ -106,7 +106,7 @@ Java.perform(function () {
             for (var i = 0; i < emuFiles.length; i++) {
                 if (path === emuFiles[i]) return false;
             }
-            return origExists.call(this);
+            return prevExists ? prevExists.call(this) : this.exists.call(this);
         };
     } catch (e) {}
 
