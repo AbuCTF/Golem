@@ -6,8 +6,6 @@ daemon mode with JSON-RPC API and MCP server for agent-driven automation.
 
 ![demo](docs/demo.png)
 
-![traffic capture](docs/traffic_capture.png)
-
 ### Architecture
 
 ![architecture](docs/architecture.png)
