@@ -13,15 +13,13 @@ daemon mode with JSON-RPC API and MCP server for agent-driven automation.
 ```bash
 git clone https://github.com/AbuCTF/Golem.git
 cd Golem
-pip install -e .
+./setup.sh
 ```
 
-prerequisites:
-- Android SDK (emulator, avdmanager, sdkmanager, adb)
-- Python 3.11+
-- Frida (`pip install frida-tools`)
-- mitmproxy (`pip install mitmproxy`)
-- apktool, jadx, APKiD (for static analysis)
+handles everything: system deps, Java, Android SDK, system image, KVM, Python package, static analysis tools.
+works on arch, debian/ubuntu, fedora, opensuse, void, alpine.
+
+flags: `--no-system`, `--no-sdk`, `--no-static`, `--verify`.
 
 ### Quick start
 
