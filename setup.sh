@@ -189,7 +189,10 @@ install_python_package() {
             fi
         done
     fi
-    pip3 install -e ".[dev,proxy,mcp]" 2>&1 | tail -3
+    pip3 install -e "." 2>&1 | tail -3
+    pip3 install -e ".[dev]" 2>&1 | tail -1
+    pip3 install -e ".[proxy]" 2>&1 | tail -1 || warn "mitmproxy install failed - proxy features unavailable"
+    pip3 install -e ".[mcp]" 2>&1 | tail -1 || warn "mcp install failed - mcp server unavailable"
     ok "golem $(python3 -c 'from golem import __version__; print(__version__)')"
 }
 
