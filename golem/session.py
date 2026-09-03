@@ -117,7 +117,21 @@ class Session:
 
         self._state = State.ACTIVE
         self._save_meta()
+        await self._apply_device_fixes()
         log.info("session '%s' launched on %s", self.name, self._serial)
+
+    async def _apply_device_fixes(self) -> None:
+        """Apply fixes on every connect: captive portal, etc."""
+        for cmd in [
+            "settings put global captive_portal_detection_enabled 0",
+            "settings put global captive_portal_mode 0",
+        ]:
+            proc = await asyncio.create_subprocess_exec(
+                "adb", "-s", self._serial, "shell", cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
 
     async def close(self) -> None:
         """Disconnect u2 but keep device running. State preserved."""
