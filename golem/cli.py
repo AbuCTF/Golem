@@ -14,7 +14,7 @@ from golem import __version__
 def main():
     parser = argparse.ArgumentParser(
         prog="golem",
-        description="Agent-driven Android testing harness",
+        description="instrumented android session orchestrator",
     )
     parser.add_argument("--version", action="version", version=f"golem {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true")

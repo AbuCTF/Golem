@@ -1,4 +1,4 @@
-agent-driven android emulation and instrumentation harness.
+instrumented android session orchestrator.
 
 AVD/physical device management, UI automation via uiautomator2, Frida instrumentation,
 mitmproxy traffic interception, static analysis, evidence collection.
