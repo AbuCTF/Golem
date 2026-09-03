@@ -120,6 +120,21 @@ class AVDDevice(Device):
         gpu = self.gpu
         if gpu == "auto" and self.headless:
             gpu = "swiftshader_indirect"
+
+        try:
+            self._serial = await self._boot_with_gpu(gpu)
+        except RuntimeError as e:
+            if gpu != "swiftshader_indirect" and "exited with code" in str(e):
+                log.warning("emulator crashed with gpu=%s, retrying with swiftshader_indirect", gpu)
+                self._serial = await self._boot_with_gpu("swiftshader_indirect")
+            else:
+                raise
+
+        await self.wait_boot()
+        await self._post_boot_setup()
+        return self._serial
+
+    async def _boot_with_gpu(self, gpu: str) -> str:
         cmd = [
             str(config.EMULATOR_BIN),
             "-avd", self._avd_name,
@@ -142,10 +157,7 @@ class AVDDevice(Device):
             env=self._sdk_env(),
         )
 
-        self._serial = await self._find_serial()
-        await self.wait_boot()
-        await self._post_boot_setup()
-        return self._serial
+        return await self._find_serial()
 
     async def _post_boot_setup(self) -> None:
         """One-time fixes after boot: disable captive portal false alarm."""

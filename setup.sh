@@ -60,7 +60,9 @@ install_system_deps() {
         debian)
             pkg_install build-essential python3 python3-pip python3-venv \
                 unzip wget curl openjdk-17-jdk-headless adb openssl \
-                libgl1 libc6 libstdc++6 ;;
+                libgl1 libc6 libstdc++6 libpulse0 libxkbfile1 \
+                libxcomposite1 libxcursor1 libxi6 libxtst6 libxrandr2 \
+                libnss3 libgoogle-perftools4 ;;
         fedora)
             pkg_install gcc python3 python3-pip python3-devel \
                 unzip wget curl java-17-openjdk-headless android-tools \
