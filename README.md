@@ -4,6 +4,8 @@ AVD/physical device management, UI automation via uiautomator2, Frida instrument
 mitmproxy traffic interception, static analysis, evidence collection.
 daemon mode with JSON-RPC API and MCP server for agent-driven automation.
 
+![demo](docs/demo.png)
+
 ### Architecture
 
 ![architecture](docs/architecture.png)
